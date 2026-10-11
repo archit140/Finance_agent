@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import json
+import uuid
 import requests
 from functools import lru_cache
 from typing import Any
@@ -98,6 +99,16 @@ def _execute(state: WorkerState) -> dict[str, Any]:
                     reconciliation = candidate
         except (TypeError, json.JSONDecodeError):
             continue
+    exact_lookup_missing = any('"status":"not_found"' in item["content"].replace(" ", "") for item in tool_results)
+    if exact_lookup_missing:
+        requested_id = entities.get("invoice_id", "the requested invoice")
+        return {
+            "final_answer": final,
+            "final_summary": f"I could not find the exact invoice ID {requested_id}. I did not substitute another invoice.",
+            "tool_results": tool_results,
+            "status": "awaiting_clarification",
+            "clarification_state": "invoice_not_found",
+        }
     if requires_finance_completion and (reconciliation is None or (requires_posting and proposal is None)) and not any('"status":"not_found"' in item["content"] for item in tool_results):
         return {
             "final_answer": final,
@@ -246,7 +257,7 @@ def build_unified_graph():
     return graph.compile(checkpointer=_checkpointer())
 
 
-def run_unified_worker(request: str, *, approved: bool = False, company_id: str = settings.company_id) -> WorkerState:
+def run_unified_worker(request: str, *, approved: bool = False, company_id: str = settings.company_id, run_id: str | None = None) -> WorkerState:
     """Run one complete autonomous request through the unified graph."""
     initial: WorkerState = {
         "user_request": request,
@@ -254,8 +265,12 @@ def run_unified_worker(request: str, *, approved: bool = False, company_id: str 
         "approved": approved,
         "max_iterations": 8,
     }
-    thread_id = f"{company_id}:{request}"
+    # A new submission gets a clean checkpoint thread. Repeated identical requests
+    # must not replay or inherit an earlier run's messages and tool observations.
+    run_id = run_id or str(uuid.uuid4())
+    thread_id = f"{company_id}:{run_id}"
     result = build_unified_graph().invoke(initial, {"configurable": {"thread_id": thread_id}})
+    result["run_id"] = run_id
     trace_dir = Path(__file__).parents[1] / "data"
     trace_dir.mkdir(exist_ok=True)
     with (trace_dir / "unified_traces.jsonl").open("a", encoding="utf-8") as handle:

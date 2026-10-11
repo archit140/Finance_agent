@@ -45,9 +45,11 @@ def interpret_goal(request: str, intent_type: str | None = None) -> GoalInterpre
     intent = intent_type or classify_request(request)
     text = request.lower()
     entities: dict[str, Any] = {}
-    invoice_match = re.search(r"\b(inv[- ]?\d+)\b", text)
+    # Support both legacy IDs (INV-1001) and generated IDs (INV-S042-0001).
+    # IDs are carried literally into the action prompt; the LLM must not infer a substitute.
+    invoice_match = re.search(r"\b(inv[- ]([a-z0-9]+(?:[- ][a-z0-9]+)*))\b", text, re.IGNORECASE)
     if invoice_match:
-        entities["invoice_id"] = invoice_match.group(1).upper().replace(" ", "-")
+        entities["invoice_id"] = "INV-" + re.sub(r"[- ]+", "-", invoice_match.group(2).upper())
     return GoalInterpretation(
         objective=request.strip(),
         success_conditions=(
