@@ -59,13 +59,17 @@ def _execute(state: WorkerState) -> dict[str, Any]:
         prompt += "\n\nHuman approval has been granted. Use the available evidence to call propose_ledger_entry now, then the application will commit and verify the approved write."
     agent_graph = build_tool_agent_graph()
     requires_finance_completion = bool(entities.get("invoice_id")) and any(term in request.lower() for term in ("reconcile", "post", "enter", "ledger", "process"))
+    requires_posting = bool(entities.get("invoice_id")) and any(term in request.lower() for term in ("post", "enter", "ledger"))
     input_messages: list[Any] = [HumanMessage(content=prompt)]
     result = {}
     for attempt in range(3):
         result = agent_graph.invoke({"messages": input_messages})
         candidate_messages = result.get("messages", [])
         candidate_tool_text = "\n".join(_content_text(message.content) for message in candidate_messages if type(message).__name__ == "ToolMessage")
-        has_terminal_finance_result = any(marker in candidate_tool_text for marker in ("approval_required", '"status":"matched"', '"status":"exception"', '"status":"missing_po"', '"status":"missing_grn"', '"status":"insufficient_evidence"'))
+        has_proposal = "approval_required" in candidate_tool_text
+        has_blocker = any(marker in candidate_tool_text for marker in ('"status":"exception"', '"status":"missing_po"', '"status":"missing_grn"', '"status":"insufficient_evidence"'))
+        has_match = '"status":"matched"' in candidate_tool_text
+        has_terminal_finance_result = has_proposal or has_blocker or (has_match and not requires_posting)
         has_not_found = '"status":"not_found"' in candidate_tool_text
         if not requires_finance_completion or has_terminal_finance_result or has_not_found or attempt == 2:
             break
@@ -94,7 +98,7 @@ def _execute(state: WorkerState) -> dict[str, Any]:
                     reconciliation = candidate
         except (TypeError, json.JSONDecodeError):
             continue
-    if requires_finance_completion and proposal is None and reconciliation is None and not any('"status":"not_found"' in item["content"] for item in tool_results):
+    if requires_finance_completion and (reconciliation is None or (requires_posting and proposal is None)) and not any('"status":"not_found"' in item["content"] for item in tool_results):
         return {
             "final_answer": final,
             "final_summary": "The worker could not complete invoice reconciliation after bounded follow-up attempts; no ledger write was made.",
