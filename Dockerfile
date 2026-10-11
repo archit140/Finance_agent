@@ -6,18 +6,17 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── Layer 2: backend package ───────────────────────────────────────────────────
+# ── Application source and local demo data ─────────────────────────────────────
 COPY backend/ backend/
-
-# ── Layer 3: documents ─────────────────────────────────────────────────────────
+COPY company_kb/ company_kb/
+COPY sandbox/ sandbox/
 COPY documents/ documents/
+COPY app.py sandbox_api.py seed_scenarios.py evaluate.py main.py .
+COPY goldens.json eval_tasks.json .
 
-# ── Layer 4: application files (change most often — last for cache efficiency) ─
-COPY app.py .
-COPY evaluate.py .
-COPY main.py .
-COPY goldens.json .
-COPY sessions.json .
+ENV ERP_API_URL=http://127.0.0.1:8000 \
+    ERP_DATA_DIR=/app/sandbox/data \
+    PYTHONUNBUFFERED=1
 
 EXPOSE 8501
 

@@ -1,0 +1,7 @@
+[
+  {"name": "happy_path", "goal": "Enter Acme invoice", "approved": false, "expected": "verified"},
+  {"name": "vendor_alias", "goal": "Enter Northwind invoice", "approved": false, "expected": "approval_required"},
+  {"name": "approved_write", "goal": "Enter Northwind invoice", "approved": true, "expected": "verified"},
+  {"name": "temporary_failure_recovery", "goal": "Enter Acme invoice", "approved": false, "inject_failure": true, "expected": "verified"},
+  {"name": "missing_invoice", "goal": "Enter Globex invoice", "approved": false, "expected": "failed"}
+]

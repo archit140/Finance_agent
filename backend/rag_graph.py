@@ -10,7 +10,6 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import InjectedToolCallId, tool
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.prebuilt import InjectedState, ToolNode, tools_condition
@@ -20,10 +19,12 @@ from tavily import TavilyClient
 
 from backend.models import ClaimVerificationResult, RelevancyDecision, RouterDecision
 from backend.vector_store import search as vs_search
+from backend.llm_provider import get_llm
+from backend.config import settings
 
 load_dotenv()
 
-llm = ChatOpenAI(model="gpt-5.4-mini")
+llm = get_llm()
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -385,7 +386,7 @@ def after_relevancy_routing(state: RAGState) -> str:
     return "generate_answer"
 
 
-def build_graph(db_path: str = "checkpoints.db"):
+def build_graph(db_path: str = str(settings.checkpoint_db)):
     conn = sqlite3.connect(db_path, check_same_thread=False)
     checkpointer = SqliteSaver(conn)
 

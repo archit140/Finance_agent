@@ -1,0 +1,3 @@
+[
+  {"email_id":"email-1001","sender":"ap@northwind.example","subject":"Invoice NW-2026-1004","date":"2026-10-09","body":"Latest invoice attached.","attachments":[{"attachment_id":"att-1001","filename":"northwind_invoice_test_pack.pdf","path":"company_kb/northwind_invoice_test_pack.pdf"}]}
+]

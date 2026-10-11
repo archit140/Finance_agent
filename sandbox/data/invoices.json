@@ -1,0 +1,4 @@
+[
+  {"invoice_id": "INV-1001", "vendor": "Acme Supplies", "amount": 1250.00, "due_date": "2026-10-20"},
+  {"invoice_id": "INV-1002", "vendor": "Northwind Parts", "amount": 8500.00, "due_date": "2026-10-25"}
+]

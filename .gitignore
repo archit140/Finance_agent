@@ -225,12 +225,20 @@ CLAUDE.md
 report.md
 
 # tests
-tests/
 graph_diag.ipynb
 
 
 # embedding cache
 embedding_cache/
+data/chroma/
+data/*.db
+data/*.db-*
+data/worker_traces.jsonl
+data/unified_traces.jsonl
+sandbox/generated/
+documents/invoices/
+pending_invoices.json
+worker_eval_results.json
 
 # database
 /*.db

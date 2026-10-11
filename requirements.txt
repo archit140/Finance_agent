@@ -187,3 +187,9 @@ xxhash==3.7.0
 yarl==1.23.0
 zipp==3.23.1
 zstandard==0.25.0
+fastapi
+uvicorn
+langchain-chroma
+langchain-groq
+langchain-huggingface
+sentence-transformers

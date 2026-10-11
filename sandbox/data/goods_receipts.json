@@ -1,0 +1,4 @@
+[
+  {"grn_id":"GRN-1001","po_id":"PO-1001","vendor":"Acme Supplies","items":[{"description":"Operations supplies","quantity":1,"unit_price":1250,"total":1250}],"status":"received"},
+  {"grn_id":"GRN-1002","po_id":"PO-1002","vendor":"Northwind Parts","items":[{"description":"Parts order","quantity":1,"unit_price":8500,"total":8500}],"status":"received"}
+]

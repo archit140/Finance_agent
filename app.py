@@ -4,14 +4,19 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import requests
 import streamlit as st
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
+from backend.llm_provider import get_llm
 
 from backend.btw_handler import handle_btw
 from backend.paper_loader import load_arxiv, load_document, load_webpage
 from backend.rag_graph import build_graph
-from backend.vector_store import add_paper, list_papers
+from backend.vector_store import add_paper, list_papers, company_documents, ingest_company_document, ingest_company_pdf, search_company
+from backend.unified_graph import run_unified_worker
+from backend.tool_agent_graph import send_completion_email
+from backend.config import settings
+from backend.invoice_intake import extract_invoice_document
 
 st.set_page_config(page_title="Papeer", page_icon="📚", layout="centered")
 
@@ -22,7 +27,7 @@ def get_graph():
 
 
 SESSIONS_FILE = Path("sessions.json")
-_rename_llm = ChatOpenAI(model="gpt-5-mini")
+_rename_llm = get_llm()
 
 
 def load_sessions() -> dict:
@@ -155,6 +160,192 @@ if "active_session_id" not in st.session_state:
         st.session_state.active_session_id = sid
 
 active_sid = st.session_state.active_session_id
+
+# ── Unified CentrAlign AI employee interface ──────────────────────────────────
+app_mode = "CentrAlign worker"
+
+if app_mode == "CentrAlign worker":
+    st.title("CentrAlign AI Employee")
+    st.caption("One query interface · company knowledge, finance tasks, and hybrid workflows")
+    st.info(f"The worker uses the Acme Ops API at {settings.erp_api_url}.")
+    with st.expander("Company knowledge", expanded=False):
+        st.caption("Approved SOPs and company documents used by the general-answer RAG route.")
+        for name in company_documents():
+            st.write(f"• {name}")
+        uploaded_company_doc = st.file_uploader("Add company document", type=["md", "markdown", "txt", "pdf"], key="company_doc")
+        if uploaded_company_doc is not None and st.button("Index company document", key="index_company_doc"):
+            safe_name = Path(uploaded_company_doc.name).name
+            file_bytes = uploaded_company_doc.getvalue()
+            (Path("company_kb") / safe_name).write_bytes(file_bytes)
+            if uploaded_company_doc.name.lower().endswith(".pdf"):
+                count = ingest_company_pdf(safe_name, file_bytes)
+            else:
+                count = ingest_company_document(safe_name, file_bytes.decode("utf-8"))
+            st.success(f"Indexed {count} chunks from {uploaded_company_doc.name}.")
+        retrieval_query = st.text_input("Test company retrieval", key="company_retrieval_query")
+        if retrieval_query and st.button("Search company knowledge", key="search_company_knowledge"):
+            st.json([{"source": doc.metadata.get("source"), "content": doc.page_content} for doc in search_company(retrieval_query)])
+    with st.expander("Upload invoice for processing", expanded=False):
+        st.caption("The invoice is extracted and stored as pending validation. Uploading never posts to the ledger.")
+        invoice_file = st.file_uploader("Invoice PDF", type=["pdf"], key="invoice_upload")
+        if invoice_file is not None and st.button("Read and create pending invoice", key="create_pending_invoice"):
+            try:
+                pending = extract_invoice_document(invoice_file.name, invoice_file.getvalue())
+                response = requests.post(f"{settings.erp_api_url}/invoices/pending", json=pending, timeout=settings.http_timeout_seconds)
+                response.raise_for_status()
+                st.session_state.last_pending_invoice = response.json()
+                st.success(f"Created {pending['invoice_id']} with status {pending['status']}.")
+            except requests.RequestException as exc:
+                st.error(f"Could not save the pending invoice: {exc}")
+            except Exception as exc:
+                st.error(f"Invoice extraction failed: {exc}")
+        pending_invoice = st.session_state.get("last_pending_invoice")
+        if pending_invoice:
+            st.json(pending_invoice)
+            if pending_invoice.get("status") == "pending_validation" and st.button("Process uploaded invoice", key="process_pending_invoice"):
+                task = f"Process uploaded invoice {pending_invoice['invoice_id']}. Inspect its evidence, find any matching purchase order and goods receipt, reconcile it, and only propose a ledger entry if the evidence supports it."
+                with st.spinner("The autonomous worker is investigating the uploaded invoice…"):
+                    try:
+                        result = run_unified_worker(task)
+                        st.session_state.pending_worker_task = task if result.get("status") == "awaiting_approval" else None
+                        st.session_state.pending_worker_result = result if result.get("status") == "awaiting_approval" else None
+                        st.success(result.get("final_summary", "Invoice processing finished.")) if result.get("status") == "completed" else st.warning(result.get("final_summary", "Invoice requires review."))
+                        st.json(result.get("final_evidence", []) or result.get("tool_results", []))
+                    except Exception as exc:
+                        st.error(f"Uploaded invoice processing failed: {exc}")
+    task = st.text_area(
+        "What would you like the AI employee to do?",
+        value="",
+        placeholder="Ask a company question or describe an outcome, for example: Find the latest invoice from Northwind Traders, enter it into the ledger, and verify it.",
+        height=90,
+    )
+    approve = st.checkbox(
+        "Approve policy-required ledger writes",
+        help="The worker pauses automatically for invoices above the policy threshold.",
+    )
+    if "pending_worker_task" not in st.session_state:
+        st.session_state.pending_worker_task = None
+    if "pending_worker_result" not in st.session_state:
+        st.session_state.pending_worker_result = None
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        run_worker = st.button("Submit query", type="primary", use_container_width=True)
+    with col2:
+        if st.button("Reset ledger", use_container_width=True):
+            try:
+                requests.post(f"{settings.erp_api_url}/reset", timeout=settings.http_timeout_seconds)
+                st.success("Ledger reset.")
+            except requests.RequestException as exc:
+                st.error(f"API unavailable: {exc}")
+
+    with st.expander("Current ledger", expanded=False):
+        if st.button("Refresh ledger", key="refresh_ledger"):
+            try:
+                ledger_response = requests.get(f"{settings.erp_api_url}/ledger", timeout=settings.http_timeout_seconds)
+                ledger_response.raise_for_status()
+                ledger_rows = ledger_response.json()
+                if ledger_rows:
+                    st.dataframe(ledger_rows, use_container_width=True, hide_index=True)
+                else:
+                    st.info("The ledger is empty.")
+            except requests.RequestException as exc:
+                st.error(f"Could not reach the mock ERP API: {exc}")
+
+    if run_worker and not task.strip():
+        st.warning("Enter a question or task first.")
+    if run_worker and task.strip():
+        with st.spinner("Executing invoice task…"):
+            try:
+                result = run_unified_worker(task, approved=approve)
+                if result.get("status") == "awaiting_approval":
+                    st.session_state.pending_worker_task = task
+                    st.session_state.pending_worker_result = result
+                else:
+                    st.session_state.pending_worker_task = None
+                    st.session_state.pending_worker_result = None
+                st.subheader("Workflow stages")
+                stage_names = ["Intake", "Agent reasoning", "Evidence retrieval", "Validation / reconciliation", "Approval", "Posting", "Verification", "Audit"]
+                status = result.get("status", "")
+                completed = {"completed"} if status == "completed" else set()
+                for stage in stage_names:
+                    if stage == "Approval" and status == "awaiting_approval":
+                        marker = "⏸️ waiting"
+                    elif stage in {"Posting", "Verification"} and status == "awaiting_approval":
+                        marker = "⏳ pending"
+                    elif stage == "Audit":
+                        marker = "✅ recorded"
+                    elif stage == "Verification" and result.get("verified"):
+                        marker = "✅ verified"
+                    else:
+                        marker = "✅ observed"
+                    st.write(f"**{stage}:** {marker}")
+                st.subheader("Plan")
+                if result.get("intent_type"):
+                    st.caption(f"Classified route: **{result['intent_type']}**")
+                plan_items = result.get("current_plan") or result.get("plan", [])
+                for step in plan_items:
+                    st.write(f"• {step if isinstance(step, str) else step.get('step_id') + ': ' + step.get('description', '')}")
+                st.subheader("Actions")
+                for action in result.get("actions", []) + [r.get("observation", "") for r in result.get("tool_results", [])]:
+                    if action:
+                        st.code(action)
+                st.subheader("Evidence")
+                st.json(result.get("final_evidence") or result.get("evidence", []) or result.get("tool_results", []))
+                if result.get("status") == "completed" or result.get("verified"):
+                    st.success(result.get("final_summary") or result.get("summary", "Verified"))
+                elif result.get("status") in {"awaiting_approval", "awaiting_clarification"} or result.get("human_gate"):
+                    st.warning(result.get("final_summary") or result.get("human_gate", "User input is required."))
+                else:
+                    st.error(result.get("final_summary") or result.get("summary", "Verification failed"))
+            except requests.RequestException as exc:
+                st.error(f"Could not reach the mock ERP API. Start it with uvicorn first.\n\n{exc}")
+            except Exception as exc:
+                st.exception(exc)
+    pending = st.session_state.get("pending_worker_result")
+    pending_task = st.session_state.get("pending_worker_task")
+    if pending and pending_task:
+        st.divider()
+        st.subheader("Approval required")
+        st.warning(pending.get("final_summary", "A policy-controlled action is waiting for approval."))
+        proposal = pending.get("pending_approval")
+        if proposal:
+            st.json(proposal)
+        email_pending = pending.get("pending_email_approval")
+        if email_pending:
+            st.caption("The agent drafted a completion email. Sending is a separate approval.")
+            st.json(email_pending)
+        approve_col, reject_col = st.columns(2)
+        with approve_col:
+            approve_label = "Approve and resume" if proposal else "Approve email draft"
+            if st.button(approve_label, type="primary", use_container_width=True):
+                with st.spinner("Resuming approved task…"):
+                    try:
+                        if email_pending and email_pending.get("draft", {}).get("draft_id"):
+                            sent = json.loads(send_completion_email.invoke({"draft_id": email_pending["draft"]["draft_id"], "approved": True}))
+                            resumed = {"final_summary": "Completion email sent.", "final_evidence": [sent], "status": "completed"}
+                        else:
+                            resumed = run_unified_worker(pending_task, approved=True)
+                        st.session_state.pending_worker_task = None
+                        st.session_state.pending_worker_result = None
+                        st.success(resumed.get("final_summary", "Approved task completed."))
+                        st.json(resumed.get("final_evidence", []) or resumed.get("tool_results", []))
+                    except Exception as exc:
+                        st.exception(exc)
+        with reject_col:
+            if st.button("Reject", use_container_width=True):
+                st.session_state.pending_worker_task = None
+                st.session_state.pending_worker_result = None
+                st.info("The proposed action was rejected and no ledger write was performed.")
+    trace_path = Path("data/unified_traces.jsonl")
+    if trace_path.exists():
+        with st.expander("Recent audit traces", expanded=False):
+            lines = trace_path.read_text(encoding="utf-8").splitlines()[-5:]
+            for line in reversed(lines):
+                try:
+                    st.json(json.loads(line))
+                except json.JSONDecodeError:
+                    st.code(line)
+    st.stop()
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
