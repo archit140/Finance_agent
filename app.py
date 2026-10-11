@@ -18,7 +18,7 @@ from backend.tool_agent_graph import send_completion_email
 from backend.config import settings
 from backend.invoice_intake import extract_invoice_document
 
-st.set_page_config(page_title="Papeer", page_icon="📚", layout="centered")
+st.set_page_config(page_title="CentrAlign AI Employee", page_icon="🧭", layout="wide")
 
 
 @st.cache_resource
@@ -39,6 +39,19 @@ def load_sessions() -> dict:
 
 def save_sessions(sessions_meta: dict) -> None:
     SESSIONS_FILE.write_text(json.dumps(sessions_meta, indent=2), encoding="utf-8")
+
+
+def _api_json(path: str, fallback):
+    try:
+        response = requests.get(f"{settings.erp_api_url}{path}", timeout=settings.http_timeout_seconds)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        return fallback
+
+
+def _status_marker(status: str) -> str:
+    return {"completed": "✅ Completed", "awaiting_approval": "⏸️ Approval required", "failed_safely": "🛑 Safely stopped", "awaiting_clarification": "💬 Clarification needed"}.get(status, "🔄 In progress")
 
 
 def _serialize_state(values: dict) -> dict:
@@ -165,9 +178,36 @@ active_sid = st.session_state.active_session_id
 app_mode = "CentrAlign worker"
 
 if app_mode == "CentrAlign worker":
-    st.title("CentrAlign AI Employee")
-    st.caption("One query interface · company knowledge, finance tasks, and hybrid workflows")
-    st.info(f"The worker uses the Acme Ops API at {settings.erp_api_url}.")
+    st.markdown("""
+    <style>
+    .block-container {padding-top: 2rem; max-width: 1400px;}
+    [data-testid="stMetric"] {background: #151923; border: 1px solid #303747; padding: .8rem; border-radius: 12px;}
+    .hero {padding: 1.2rem 1.4rem; border-radius: 16px; background: linear-gradient(120deg,#15243b,#1d1834); border: 1px solid #344766; margin-bottom: 1rem;}
+    .hero h1 {margin: 0; font-size: 2rem;} .hero p {margin: .35rem 0 0; color: #b8c4d9;}
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<div class="hero"><h1>🧭 CentrAlign AI Employee</h1><p>Give the worker an outcome. It investigates, acts with tools, requests approval when needed, and verifies the result.</p></div>', unsafe_allow_html=True)
+    health = _api_json("/health", {})
+    ledger_snapshot = _api_json("/ledger", [])
+    pending_snapshot = _api_json("/invoices/pending", [])
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("ERP", "Online" if health.get("status") == "ok" else "Offline")
+    metric_cols[1].metric("Ledger entries", len(ledger_snapshot) if isinstance(ledger_snapshot, list) else "—")
+    metric_cols[2].metric("Pending invoices", len(pending_snapshot) if isinstance(pending_snapshot, list) else "—")
+    metric_cols[3].metric("LLM", settings.groq_model)
+    st.caption(f"ERP endpoint: `{settings.erp_api_url}` · Company: `{settings.company_id}`")
+    st.markdown("#### Quick start")
+    quick_cols = st.columns(4)
+    quick_prompts = [
+        ("📄 Clean invoice", "Find invoice INV-1001, inspect its purchase order and goods receipt, reconcile it, and enter it into the ledger."),
+        ("🧪 Exception test", "Process invoice INV-S042-0003 and explain why it cannot be posted if the received quantity is insufficient."),
+        ("📬 Email invoice", "Search my email for the latest invoice from Northwind, inspect the attachment, and reconcile it against the ERP."),
+        ("📚 Company policy", "What is the company policy for invoices with missing goods receipts?"),
+    ]
+    for col, (label, prompt) in zip(quick_cols, quick_prompts):
+        if col.button(label, use_container_width=True):
+            st.session_state.worker_task = prompt
+            st.rerun()
     with st.expander("Company knowledge", expanded=False):
         st.caption("Approved SOPs and company documents used by the general-answer RAG route.")
         for name in company_documents():
@@ -213,9 +253,11 @@ if app_mode == "CentrAlign worker":
                         st.json(result.get("final_evidence", []) or result.get("tool_results", []))
                     except Exception as exc:
                         st.error(f"Uploaded invoice processing failed: {exc}")
+    if "worker_task" not in st.session_state:
+        st.session_state.worker_task = ""
     task = st.text_area(
         "What would you like the AI employee to do?",
-        value="",
+        key="worker_task",
         placeholder="Ask a company question or describe an outcome, for example: Find the latest invoice from Northwind Traders, enter it into the ledger, and verify it.",
         height=90,
     )
@@ -263,34 +305,24 @@ if app_mode == "CentrAlign worker":
                 else:
                     st.session_state.pending_worker_task = None
                     st.session_state.pending_worker_result = None
-                st.subheader("Workflow stages")
-                stage_names = ["Intake", "Agent reasoning", "Evidence retrieval", "Validation / reconciliation", "Approval", "Posting", "Verification", "Audit"]
-                status = result.get("status", "")
-                completed = {"completed"} if status == "completed" else set()
-                for stage in stage_names:
-                    if stage == "Approval" and status == "awaiting_approval":
-                        marker = "⏸️ waiting"
-                    elif stage in {"Posting", "Verification"} and status == "awaiting_approval":
-                        marker = "⏳ pending"
-                    elif stage == "Audit":
-                        marker = "✅ recorded"
-                    elif stage == "Verification" and result.get("verified"):
-                        marker = "✅ verified"
-                    else:
-                        marker = "✅ observed"
-                    st.write(f"**{stage}:** {marker}")
-                st.subheader("Plan")
-                if result.get("intent_type"):
-                    st.caption(f"Classified route: **{result['intent_type']}**")
-                plan_items = result.get("current_plan") or result.get("plan", [])
-                for step in plan_items:
-                    st.write(f"• {step if isinstance(step, str) else step.get('step_id') + ': ' + step.get('description', '')}")
-                st.subheader("Actions")
-                for action in result.get("actions", []) + [r.get("observation", "") for r in result.get("tool_results", [])]:
-                    if action:
-                        st.code(action)
-                st.subheader("Evidence")
-                st.json(result.get("final_evidence") or result.get("evidence", []) or result.get("tool_results", []))
+                st.subheader(_status_marker(result.get("status", "")))
+                st.info(result.get("final_summary") or result.get("summary", "Worker finished."))
+                result_tabs = st.tabs(["Workflow", "Evidence", "Tool trace"])
+                with result_tabs[0]:
+                    stage_names = ["Intake", "Agent reasoning", "Evidence retrieval", "Validation / reconciliation", "Approval", "Posting", "Verification", "Audit"]
+                    status = result.get("status", "")
+                    tool_text = " ".join(str(item.get("content", "")) for item in result.get("tool_results", []))
+                    stage_state = {"Intake": True, "Agent reasoning": bool(result.get("tool_results")), "Evidence retrieval": bool(result.get("retrieved_context") or "search_" in tool_text), "Validation / reconciliation": "reconciliation" in tool_text or "matched" in tool_text or "exception" in tool_text, "Approval": status == "awaiting_approval" or bool(result.get("pending_approval")), "Posting": bool(result.get("verified")), "Verification": bool(result.get("verified")), "Audit": True}
+                    for stage in stage_names:
+                        marker = "⏸️ Waiting" if stage == "Approval" and status == "awaiting_approval" else "✅ Done" if stage_state[stage] else "○ Not reached"
+                        st.write(f"**{stage}** · {marker}")
+                    if result.get("intent_type"):
+                        st.caption(f"LLM route: **{result['intent_type']}**")
+                with result_tabs[1]:
+                    evidence = result.get("final_evidence") or result.get("evidence", [])
+                    st.json(evidence or [{"message": "No structured evidence was returned."}])
+                with result_tabs[2]:
+                    st.json(result.get("tool_results", []) or [{"message": "No tools were called."}])
                 if result.get("status") == "completed" or result.get("verified"):
                     st.success(result.get("final_summary") or result.get("summary", "Verified"))
                 elif result.get("status") in {"awaiting_approval", "awaiting_clarification"} or result.get("human_gate"):
