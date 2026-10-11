@@ -27,6 +27,18 @@ def list_invoices() -> str:
     response.raise_for_status()
     return response.text
 
+@tool
+def get_invoice(invoice_id: str) -> str:
+    """Retrieve one exact invoice by its internal ID. Never substitute a similar invoice."""
+    try:
+        response = http_request("GET", f"{settings.erp_api_url}/invoices/{invoice_id}")
+        if response.status_code == 404:
+            return json.dumps({"status": "not_found", "invoice_id": invoice_id, "message": "No invoice with this exact internal ID exists."})
+        response.raise_for_status()
+        return response.text
+    except requests.RequestException as exc:
+        return json.dumps({"status": "unavailable", "invoice_id": invoice_id, "error": str(exc), "retryable": True})
+
 
 @tool
 def list_ledger() -> str:
@@ -128,7 +140,7 @@ def propose_ledger_entry(invoice_id: str, amount: float, due_date: str, vendor: 
     return json.dumps({"status": "approval_required", "invoice_id": invoice_id, "amount": amount, "due_date": due_date, "vendor": vendor})
 
 
-ACTION_TOOLS = [list_invoices, list_ledger, list_purchase_orders, list_goods_receipts, reconcile_invoice_records, search_emails, get_email_attachment, read_invoice_attachment, draft_completion_email, search_company_knowledge, propose_ledger_entry]
+ACTION_TOOLS = [list_invoices, get_invoice, list_ledger, list_purchase_orders, list_goods_receipts, reconcile_invoice_records, search_emails, get_email_attachment, read_invoice_attachment, draft_completion_email, search_company_knowledge, propose_ledger_entry]
 
 SYSTEM_PROMPT = """You are the proactive Acme Operations finance employee.
 Own the user's requested outcome. Infer the necessary sequence from the goal and inspect the ERP before acting.
@@ -137,7 +149,7 @@ After every tool result, reassess what is true and choose the next useful action
 Use search_company_knowledge when the request refers to an uploaded document, a vendor alias, or a company policy.
 Use search_emails when the user asks to find an invoice in email; inspect a returned attachment before using it as evidence.
 Use read_invoice_attachment to extract invoice facts from a PDF. Use draft_completion_email only after the requested work is verified; it creates a draft and never sends it.
-Use list_invoices to identify a unique invoice, list_ledger to inspect or verify state, and propose_ledger_entry only when
+If the user gives an internal invoice ID, call get_invoice with that exact ID first. If it returns not_found, do not select a similar ID or invoice number; explain the mismatch and ask for clarification. Use list_invoices to browse only when no exact ID was provided. Use list_ledger to inspect or verify state, and propose_ledger_entry only when
 you have the exact invoice ID, amount, due date, and vendor. The proposal is not a write; the application handles approval.
 For invoice processing, inspect the matching purchase order and goods receipt and call reconcile_invoice_records before proposing a ledger entry.
 Never propose or post when reconciliation returns exception, missing_po, missing_grn, or insufficient_evidence; report the evidence and blocker.

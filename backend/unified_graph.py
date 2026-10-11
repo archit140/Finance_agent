@@ -51,7 +51,10 @@ def _content_text(content: Any) -> str:
 def _execute(state: WorkerState) -> dict[str, Any]:
     request = state.get("user_request") or state.get("goal", "")
     context = state.get("final_answer", "")
-    prompt = request if not context else f"User request: {request}\n\nGrounded RAG answer already prepared:\n{context}"
+    goal = state.get("goal_interpretation", {})
+    entities = goal.get("entities", {}) if isinstance(goal, dict) else {}
+    target_hint = f"\n\nStructured target extracted from the request: {json.dumps(entities)}. Treat these identifiers as exact." if entities else ""
+    prompt = (request if not context else f"User request: {request}\n\nGrounded RAG answer already prepared:\n{context}") + target_hint
     if state.get("approved", False):
         prompt += "\n\nHuman approval has been granted. Use the available evidence to call propose_ledger_entry now, then the application will commit and verify the approved write."
     result = build_tool_agent_graph().invoke({"messages": [HumanMessage(content=prompt)]})
