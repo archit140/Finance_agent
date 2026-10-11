@@ -57,7 +57,19 @@ def _execute(state: WorkerState) -> dict[str, Any]:
     prompt = (request if not context else f"User request: {request}\n\nGrounded RAG answer already prepared:\n{context}") + target_hint
     if state.get("approved", False):
         prompt += "\n\nHuman approval has been granted. Use the available evidence to call propose_ledger_entry now, then the application will commit and verify the approved write."
-    result = build_tool_agent_graph().invoke({"messages": [HumanMessage(content=prompt)]})
+    agent_graph = build_tool_agent_graph()
+    requires_finance_completion = bool(entities.get("invoice_id")) and any(term in request.lower() for term in ("reconcile", "post", "enter", "ledger", "process"))
+    input_messages: list[Any] = [HumanMessage(content=prompt)]
+    result = {}
+    for attempt in range(3):
+        result = agent_graph.invoke({"messages": input_messages})
+        candidate_messages = result.get("messages", [])
+        candidate_tool_text = "\n".join(_content_text(message.content) for message in candidate_messages if type(message).__name__ == "ToolMessage")
+        has_terminal_finance_result = any(marker in candidate_tool_text for marker in ("approval_required", '"status":"matched"', '"status":"exception"', '"status":"missing_po"', '"status":"missing_grn"', '"status":"insufficient_evidence"'))
+        has_not_found = '"status":"not_found"' in candidate_tool_text
+        if not requires_finance_completion or has_terminal_finance_result or has_not_found or attempt == 2:
+            break
+        input_messages = candidate_messages + [HumanMessage(content="Continue investigating this exact invoice. You have not reached a terminal finance result yet. Decide the next tool yourself, but inspect the goods receipt and call reconciliation before reporting completion. If evidence is missing, return the appropriate safe blocker.")]
     messages = result.get("messages", [])
     final = _content_text(messages[-1].content) if messages else "No tool-agent response was produced."
     tool_results = [
@@ -82,6 +94,13 @@ def _execute(state: WorkerState) -> dict[str, Any]:
                     reconciliation = candidate
         except (TypeError, json.JSONDecodeError):
             continue
+    if requires_finance_completion and proposal is None and reconciliation is None and not any('"status":"not_found"' in item["content"] for item in tool_results):
+        return {
+            "final_answer": final,
+            "final_summary": "The worker could not complete invoice reconciliation after bounded follow-up attempts; no ledger write was made.",
+            "tool_results": tool_results,
+            "status": "failed_safely",
+        }
     if reconciliation and reconciliation.get("status") != "matched":
         blocker = "; ".join(reconciliation.get("exceptions", [])) or reconciliation["status"]
         return {
