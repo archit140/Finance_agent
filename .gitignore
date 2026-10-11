@@ -246,3 +246,5 @@ worker_eval_results.json
 
 # deep eval
 .deepeval/
+
+company_kb/*.pdf
